@@ -21,6 +21,13 @@ export function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+/** YYYY-MM-DD for tomorrow in UTC. */
+export function tomorrowUtcDateKey(now = new Date()): string {
+  const day = startOfUtcDay(now);
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
 export function eventDateKey(row: PredictionRow): string {
   if (row.event_datetime) {
     const d = new Date(row.event_datetime);

@@ -17,11 +17,25 @@ import {
   pct,
   sizeSelectedTrades,
   sortByTradeDelta,
+  tomorrowUtcDateKey,
 } from "./lib/sizing";
 import type { MarketView, Snapshot } from "./lib/types";
 
 type ViewMode = "delta" | "date";
 type Panel = "markets" | "trades";
+
+function readNumber(
+  value: string,
+  fallback: number,
+  opts?: { min?: number; max?: number },
+): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  let next = n;
+  if (opts?.min != null) next = Math.max(opts.min, next);
+  if (opts?.max != null) next = Math.min(opts.max, next);
+  return next;
+}
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -124,18 +138,48 @@ export default function App() {
     setSelected(new Set(rows.map((r) => r.market_ticker)));
   }
 
+  function selectAllTomorrow() {
+    const tomorrow = tomorrowUtcDateKey();
+    const tickers = markets
+      .filter(
+        (m) =>
+          m.eventDate === tomorrow &&
+          m.side != null &&
+          m.kellyFraction > 0 &&
+          m.absTradeDelta >= minAbsDelta,
+      )
+      .map((m) => m.market_ticker);
+    setSelected(new Set(tickers));
+  }
+
   function clearSelected() {
     setSelected(new Set());
   }
 
+  function showTradeAmounts() {
+    setPanel("trades");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const tomorrowCount = useMemo(() => {
+    const tomorrow = tomorrowUtcDateKey();
+    return markets.filter(
+      (m) =>
+        m.eventDate === tomorrow &&
+        m.side != null &&
+        m.kellyFraction > 0 &&
+        m.absTradeDelta >= minAbsDelta,
+    ).length;
+  }, [markets, minAbsDelta]);
+
   return (
-    <div className="mx-auto min-h-[100dvh] max-w-6xl px-4 py-8 md:px-6 md:pt-10">
-      <header className="mb-10 flex flex-col gap-4 border-b border-slate-200 pb-8 dark:border-slate-800 md:flex-row md:items-end md:justify-between">
-        <div>
+    <div className="mx-auto min-h-[100dvh] w-full max-w-6xl px-3 py-6 pb-[calc(7rem+env(safe-area-inset-bottom))] sm:px-4 md:px-6 md:py-8 md:pt-10">
+      <header className="mb-8 flex flex-col gap-4 border-b border-slate-200 pb-6 dark:border-slate-800 sm:mb-10 sm:pb-8 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0">
           <p className="text-sm font-medium tracking-tight text-emerald-700 dark:text-emerald-400">
             Kalorie Desk
           </p>
-          <h1 className="mt-1 max-w-xl text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 md:text-4xl">
+          <h1 className="mt-1 max-w-xl text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl md:text-4xl">
             Pick markets, Kelly-size the book
           </h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-500 dark:text-slate-400">
@@ -143,17 +187,17 @@ export default function App() {
             Kelly under a long-run risk-of-ruin cap.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
           <button
             type="button"
             onClick={() => void loadRemote()}
             disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 dark:bg-emerald-600"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 sm:flex-none dark:bg-emerald-600"
           >
             <ArrowClockwise size={16} weight="bold" />
             Refresh
           </button>
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition active:scale-[0.98] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+          <label className="inline-flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 transition active:scale-[0.98] sm:flex-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
             <UploadSimple size={16} />
             Load JSON
             <input
@@ -172,8 +216,10 @@ export default function App() {
             type="number"
             min={0}
             step={10}
-            value={dailyBankroll}
-            onChange={(e) => setDailyBankroll(Number(e.target.value) || 0)}
+            defaultValue={dailyBankroll}
+            onBlur={(e) =>
+              setDailyBankroll(readNumber(e.target.value, dailyBankroll, { min: 0 }))
+            }
             className={inputClass}
           />
         </Field>
@@ -182,8 +228,12 @@ export default function App() {
             type="number"
             min={1}
             step={1}
-            value={maxMarkets}
-            onChange={(e) => setMaxMarkets(Number(e.target.value) || 1)}
+            defaultValue={maxMarkets}
+            onBlur={(e) =>
+              setMaxMarkets(
+                Math.floor(readNumber(e.target.value, maxMarkets, { min: 1 })),
+              )
+            }
             className={inputClass}
           />
         </Field>
@@ -193,8 +243,12 @@ export default function App() {
             min={0.001}
             max={0.5}
             step={0.005}
-            value={riskOfRuin}
-            onChange={(e) => setRiskOfRuin(Number(e.target.value) || 0)}
+            defaultValue={riskOfRuin}
+            onBlur={(e) =>
+              setRiskOfRuin(
+                readNumber(e.target.value, riskOfRuin, { min: 0.001, max: 0.5 }),
+              )
+            }
             className={inputClass}
           />
         </Field>
@@ -204,8 +258,12 @@ export default function App() {
             min={0}
             max={1}
             step={0.005}
-            value={minAbsDelta}
-            onChange={(e) => setMinAbsDelta(Number(e.target.value) || 0)}
+            defaultValue={minAbsDelta}
+            onBlur={(e) =>
+              setMinAbsDelta(
+                readNumber(e.target.value, minAbsDelta, { min: 0, max: 1 }),
+              )
+            }
             className={inputClass}
           />
         </Field>
@@ -218,18 +276,19 @@ export default function App() {
       ) : null}
 
       {snapshot ? (
-        <div className="mb-6 flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
+        <div className="mb-6 grid gap-1 text-sm text-slate-500 dark:text-slate-400 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-6">
           <span>
             Snapshot{" "}
             <span className="font-medium text-slate-800 dark:text-slate-200">
               {snapshot.snapshot_id}
             </span>
           </span>
-          <span>{markets.length} open markets</span>
-          <span>{selected.size} selected</span>
           <span>
-            {trades.length} funded · {money(totalStake)} · Kelly scale{" "}
-            {(scale * 100).toFixed(0)}% · est. RoR {pct(estimatedRoR)}
+            {markets.length} open · {selected.size} selected
+          </span>
+          <span className="break-words">
+            {trades.length} funded · {money(totalStake)} · Kelly{" "}
+            {(scale * 100).toFixed(0)}% · RoR {pct(estimatedRoR)}
           </span>
         </div>
       ) : (
@@ -241,15 +300,23 @@ export default function App() {
       <div className="mb-3 flex flex-wrap gap-2">
         <button
           type="button"
+          onClick={selectAllTomorrow}
+          className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
+        >
+          Select all tomorrow
+          {tomorrowCount ? ` (${tomorrowCount})` : ""}
+        </button>
+        <button
+          type="button"
           onClick={() => selectAllVisible(markets)}
-          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
         >
           Select all open
         </button>
         <button
           type="button"
           onClick={clearSelected}
-          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
         >
           Clear selection
         </button>
@@ -270,14 +337,16 @@ export default function App() {
           onClick={() => setView("delta")}
           icon={<ChartLineUp size={16} weight="bold" />}
         >
-          Highest delta
+          <span className="sm:hidden">Delta</span>
+          <span className="hidden sm:inline">Highest delta</span>
         </TabButton>
         <TabButton
           active={view === "date"}
           onClick={() => setView("date")}
           icon={<CalendarBlank size={16} weight="bold" />}
         >
-          By event date
+          <span className="sm:hidden">Date</span>
+          <span className="hidden sm:inline">By event date</span>
         </TabButton>
       </div>
 
@@ -336,12 +405,29 @@ export default function App() {
       ) : (
         <Empty text="Select markets with executable edge to build a Kelly book." />
       )}
+
+      {selected.size > 0 ? (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 sm:px-4">
+          <div className="mx-auto flex max-w-6xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <p className="min-w-0 text-center text-xs text-slate-500 sm:text-left sm:text-sm dark:text-slate-400">
+              {selected.size} selected · {trades.length} sized · {money(totalStake)}
+            </p>
+            <button
+              type="button"
+              onClick={showTradeAmounts}
+              className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition active:scale-[0.98] sm:w-auto sm:py-2.5"
+            >
+              Show trade amounts
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 const inputClass =
-  "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950";
+  "w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 sm:text-sm";
 
 function Field({
   label,
@@ -458,65 +544,130 @@ function MarketsTable({
   onToggleSelect: (ticker: string) => void;
 }) {
   return (
-    <div className="overflow-x-auto border-t border-slate-100 dark:border-slate-900">
-      <table className="w-full min-w-[920px] border-collapse text-left text-sm">
-        <thead>
-          <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-            <th className="px-3 py-2 font-medium">Phrase</th>
-            <th className="px-3 py-2 font-medium">Model</th>
-            <th className="px-3 py-2 font-medium">Bid / Ask</th>
-            <th className="px-3 py-2 font-medium">Side</th>
-            <th className="px-3 py-2 font-medium">Delta</th>
-            <th className="px-3 py-2 font-medium">Kelly f*</th>
-            <th className="px-3 py-2 text-right font-medium">Pick</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              key={row.market_ticker}
-              className="border-b border-slate-100 last:border-0 dark:border-slate-900"
-            >
-              <td className="px-3 py-2.5 align-top">
-                <div className="font-medium text-slate-900 dark:text-slate-100">
-                  {row.target_phrase}
+    <>
+      <ul className="divide-y divide-slate-100 border-t border-slate-100 dark:divide-slate-900 dark:border-slate-900 md:hidden">
+        {rows.map((row) => {
+          const canPick = Boolean(row.side && row.kellyFraction > 0);
+          return (
+            <li key={row.market_ticker} className="flex gap-3 px-3 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-medium text-slate-900 dark:text-slate-100">
+                      {row.target_phrase}
+                    </p>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                      {row.market_ticker}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    {row.side ?? "-"}
+                  </span>
                 </div>
-                <div className="mt-0.5 font-mono text-[11px] text-slate-400">
-                  {row.market_ticker}
-                </div>
-              </td>
-              <td className="px-3 py-2.5 align-top font-mono tabular-nums">
-                {pct(row.model_probability)}
-              </td>
-              <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
-                {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
-              </td>
-              <td className="px-3 py-2.5 align-top text-xs font-semibold">
-                {row.side ?? "-"}
-              </td>
-              <td className="px-3 py-2.5 align-top font-mono tabular-nums">
-                {row.tradeDelta === 0
-                  ? "-"
-                  : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
-              </td>
-              <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
-                {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
-              </td>
-              <td className="px-3 py-2.5 align-top text-right">
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-500">
+                  <div>
+                    Model{" "}
+                    <span className="font-mono text-slate-800 dark:text-slate-200">
+                      {pct(row.model_probability)}
+                    </span>
+                  </div>
+                  <div>
+                    B/A{" "}
+                    <span className="font-mono text-slate-800 dark:text-slate-200">
+                      {row.yes_bid.toFixed(2)}/{row.yes_ask.toFixed(2)}
+                    </span>
+                  </div>
+                  <div>
+                    Delta{" "}
+                    <span className="font-mono text-slate-800 dark:text-slate-200">
+                      {row.tradeDelta === 0
+                        ? "-"
+                        : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
+                    </span>
+                  </div>
+                  <div>
+                    Kelly{" "}
+                    <span className="font-mono text-slate-800 dark:text-slate-200">
+                      {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
+                    </span>
+                  </div>
+                </dl>
+              </div>
+              <label className="flex shrink-0 items-center pl-1">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 accent-emerald-600"
+                  className="h-5 w-5 accent-emerald-600"
                   checked={selected.has(row.market_ticker)}
-                  disabled={!row.side || row.kellyFraction <= 0}
+                  disabled={!canPick}
                   onChange={() => onToggleSelect(row.market_ticker)}
                   aria-label={`Select ${row.market_ticker}`}
                 />
-              </td>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="hidden overflow-x-auto border-t border-slate-100 dark:border-slate-900 md:block">
+        <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+              <th className="px-3 py-2 font-medium">Phrase</th>
+              <th className="px-3 py-2 font-medium">Model</th>
+              <th className="px-3 py-2 font-medium">Bid / Ask</th>
+              <th className="px-3 py-2 font-medium">Side</th>
+              <th className="px-3 py-2 font-medium">Delta</th>
+              <th className="px-3 py-2 font-medium">Kelly f*</th>
+              <th className="px-3 py-2 text-right font-medium">Pick</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.market_ticker}
+                className="border-b border-slate-100 last:border-0 dark:border-slate-900"
+              >
+                <td className="px-3 py-2.5 align-top">
+                  <div className="font-medium text-slate-900 dark:text-slate-100">
+                    {row.target_phrase}
+                  </div>
+                  <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+                    {row.market_ticker}
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 align-top font-mono tabular-nums">
+                  {pct(row.model_probability)}
+                </td>
+                <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
+                  {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
+                </td>
+                <td className="px-3 py-2.5 align-top text-xs font-semibold">
+                  {row.side ?? "-"}
+                </td>
+                <td className="px-3 py-2.5 align-top font-mono tabular-nums">
+                  {row.tradeDelta === 0
+                    ? "-"
+                    : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
+                </td>
+                <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
+                  {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
+                </td>
+                <td className="px-3 py-2.5 align-top text-right">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-emerald-600"
+                    checked={selected.has(row.market_ticker)}
+                    disabled={!row.side || row.kellyFraction <= 0}
+                    onChange={() => onToggleSelect(row.market_ticker)}
+                    aria-label={`Select ${row.market_ticker}`}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -526,63 +677,123 @@ function TradesTable({
   trades: ReturnType<typeof sizeSelectedTrades>["trades"];
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60">
-      <table className="w-full min-w-[780px] border-collapse text-left text-sm">
-        <thead>
-          <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-            <th className="px-3 py-3 font-medium">Market</th>
-            <th className="px-3 py-3 font-medium">Side</th>
-            <th className="px-3 py-3 font-medium">Delta</th>
-            <th className="px-3 py-3 font-medium">Kelly f</th>
-            <th className="px-3 py-3 font-medium">Cost</th>
-            <th className="px-3 py-3 font-medium">Contracts</th>
-            <th className="px-3 py-3 font-medium">Stake</th>
-          </tr>
-        </thead>
-        <tbody>
-          {trades.map((t) => (
-            <tr
-              key={t.view.market_ticker}
-              className="border-b border-slate-100 last:border-0 dark:border-slate-900"
-            >
-              <td className="px-3 py-3 align-top">
-                <div className="font-medium text-slate-900 dark:text-slate-100">
+    <>
+      <ul className="space-y-3 md:hidden">
+        {trades.map((t) => (
+          <li
+            key={t.view.market_ticker}
+            className="rounded-xl border border-slate-200 bg-white/80 p-3 dark:border-slate-800 dark:bg-slate-950/60"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium text-slate-900 dark:text-slate-100">
                   {t.view.target_phrase}
-                </div>
-                <div className="mt-0.5 max-w-xs truncate text-xs text-slate-400">
+                </p>
+                <p className="mt-0.5 truncate text-xs text-slate-400">
                   {t.view.event_title || t.view.event_ticker}
-                </div>
-              </td>
-              <td className="px-3 py-3 align-top">
-                <span
-                  className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${
-                    t.side === "YES"
-                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                      : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
-                  }`}
-                >
-                  {t.side}
+                </p>
+              </div>
+              <span
+                className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold ${
+                  t.side === "YES"
+                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                    : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                }`}
+              >
+                {t.side}
+              </span>
+            </div>
+            <dl className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
+              <div>
+                Delta{" "}
+                <span className="font-mono text-slate-800 dark:text-slate-200">
+                  +{t.view.tradeDelta.toFixed(3)}
                 </span>
-              </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                +{t.view.tradeDelta.toFixed(3)}
-              </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {pct(t.kellyFraction)}
-              </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {t.cost.toFixed(2)}
-              </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {t.contracts}
-              </td>
-              <td className="px-3 py-3 align-top font-semibold tabular-nums">
-                {money(t.dollars)}
-              </td>
+              </div>
+              <div>
+                Kelly{" "}
+                <span className="font-mono text-slate-800 dark:text-slate-200">
+                  {pct(t.kellyFraction)}
+                </span>
+              </div>
+              <div>
+                Cost{" "}
+                <span className="font-mono text-slate-800 dark:text-slate-200">
+                  {t.cost.toFixed(2)}
+                </span>
+              </div>
+              <div>
+                Contracts{" "}
+                <span className="font-mono text-slate-800 dark:text-slate-200">
+                  {t.contracts}
+                </span>
+              </div>
+            </dl>
+            <p className="mt-3 text-base font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+              {money(t.dollars)}
+            </p>
+          </li>
+        ))}
+      </ul>
+
+      <div className="hidden overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60 md:block">
+        <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+              <th className="px-3 py-3 font-medium">Market</th>
+              <th className="px-3 py-3 font-medium">Side</th>
+              <th className="px-3 py-3 font-medium">Delta</th>
+              <th className="px-3 py-3 font-medium">Kelly f</th>
+              <th className="px-3 py-3 font-medium">Cost</th>
+              <th className="px-3 py-3 font-medium">Contracts</th>
+              <th className="px-3 py-3 font-medium">Stake</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {trades.map((t) => (
+              <tr
+                key={t.view.market_ticker}
+                className="border-b border-slate-100 last:border-0 dark:border-slate-900"
+              >
+                <td className="px-3 py-3 align-top">
+                  <div className="font-medium text-slate-900 dark:text-slate-100">
+                    {t.view.target_phrase}
+                  </div>
+                  <div className="mt-0.5 max-w-xs truncate text-xs text-slate-400">
+                    {t.view.event_title || t.view.event_ticker}
+                  </div>
+                </td>
+                <td className="px-3 py-3 align-top">
+                  <span
+                    className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${
+                      t.side === "YES"
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                        : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                    }`}
+                  >
+                    {t.side}
+                  </span>
+                </td>
+                <td className="px-3 py-3 align-top font-mono tabular-nums">
+                  +{t.view.tradeDelta.toFixed(3)}
+                </td>
+                <td className="px-3 py-3 align-top font-mono tabular-nums">
+                  {pct(t.kellyFraction)}
+                </td>
+                <td className="px-3 py-3 align-top font-mono tabular-nums">
+                  {t.cost.toFixed(2)}
+                </td>
+                <td className="px-3 py-3 align-top font-mono tabular-nums">
+                  {t.contracts}
+                </td>
+                <td className="px-3 py-3 align-top font-semibold tabular-nums">
+                  {money(t.dollars)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

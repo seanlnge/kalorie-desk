@@ -48,7 +48,18 @@ cp .env.example .env
 npm run dev
 ```
 
-Open http://localhost:5173/ — you should see **All markets** (hundreds of rows). **Sized trades** is a separate tab.
+Open http://localhost:5173/
+
+## Deploy on Vercel
+
+1. Import this GitHub repo in Vercel (Framework Preset: Vite).
+2. Add **server** env var (not `VITE_`):
+
+   `SNAPSHOT_BASE_URL=https://kaloriepollerstack-snapshotbucketb2bf31d3-ahxtgpxovdmo.s3.us-east-2.amazonaws.com`
+
+3. Deploy. The app loads snapshots via same-origin `/api/latest` → S3.
+
+Mobile: market/trade rows use stacked cards under `md`; tables on desktop.
 
 ## Lambda contract
 
