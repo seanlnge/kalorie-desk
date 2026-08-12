@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
-  CalendarBlank,
+  CaretDown,
+  CaretRight,
   ChartLineUp,
+  CalendarBlank,
   UploadSimple,
 } from "@phosphor-icons/react";
 import { fetchLatestSnapshot } from "./lib/fetchSnapshot";
 import {
-  groupPredictionsByDate,
+  activeMarkets,
+  groupMarketsByDate,
+  groupMarketsByEvent,
   groupTradesByDate,
   money,
   pct,
-  sizeTrades,
-  sortPredictionsByAbsDelta,
-  sortTradesByAbsDelta,
+  sizeSelectedTrades,
+  sortByTradeDelta,
 } from "./lib/sizing";
-import type { PredictionRow, Snapshot } from "./lib/types";
+import type { MarketView, Snapshot } from "./lib/types";
 
 type ViewMode = "delta" | "date";
 type Panel = "markets" | "trades";
@@ -24,17 +27,22 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [bankroll, setBankroll] = useState(500);
+  const [dailyBankroll, setDailyBankroll] = useState(500);
+  const [maxMarkets, setMaxMarkets] = useState(8);
   const [riskOfRuin, setRiskOfRuin] = useState(0.05);
-  const [minAbsDelta, setMinAbsDelta] = useState(0.03);
-  const [view, setView] = useState<ViewMode>("delta");
+  const [minAbsDelta, setMinAbsDelta] = useState(0.02);
+  const [view, setView] = useState<ViewMode>("date");
   const [panel, setPanel] = useState<Panel>("markets");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   async function loadRemote() {
     setLoading(true);
     setError(null);
     try {
-      setSnapshot(await fetchLatestSnapshot());
+      const next = await fetchLatestSnapshot();
+      setSnapshot(next);
+      setSelected(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load snapshot");
     } finally {
@@ -57,16 +65,8 @@ export default function App() {
         if (!Array.isArray(data.predictions)) {
           throw new Error("JSON missing predictions[]");
         }
-        setSnapshot({
-          ...data,
-          predictions: data.predictions.map((row) => ({
-            ...row,
-            delta: row.delta ?? row.residual_delta ?? 0,
-            abs_delta:
-              row.abs_delta ??
-              Math.abs(row.delta ?? row.residual_delta ?? 0),
-          })),
-        });
+        setSnapshot(data);
+        setSelected(new Set());
       } catch (err) {
         setError(err instanceof Error ? err.message : "Invalid JSON");
       } finally {
@@ -76,22 +76,57 @@ export default function App() {
     reader.readAsText(file);
   }
 
-  const predictions = snapshot?.predictions ?? [];
-  const trades = useMemo(
+  const markets = useMemo(
+    () => activeMarkets(snapshot?.predictions ?? []),
+    [snapshot],
+  );
+
+  const selectedViews = useMemo(
+    () => markets.filter((m) => selected.has(m.market_ticker)),
+    [markets, selected],
+  );
+
+  const { trades, scale, estimatedRoR } = useMemo(
     () =>
-      sizeTrades(predictions, {
-        bankroll,
+      sizeSelectedTrades(selectedViews, {
+        dailyBankroll,
+        maxMarkets,
         riskOfRuin,
         minAbsDelta,
       }),
-    [predictions, bankroll, riskOfRuin, minAbsDelta],
+    [selectedViews, dailyBankroll, maxMarkets, riskOfRuin, minAbsDelta],
   );
 
   const totalStake = trades.reduce((sum, t) => sum + t.dollars, 0);
-  const marketsByDelta = sortPredictionsByAbsDelta(predictions);
-  const marketsByDate = groupPredictionsByDate(predictions);
-  const tradesByDelta = sortTradesByAbsDelta(trades);
+  const marketsByDelta = sortByTradeDelta(markets);
+  const marketsByDate = groupMarketsByDate(markets);
   const tradesByDate = groupTradesByDate(trades);
+
+  function toggleSelect(ticker: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticker)) next.delete(ticker);
+      else next.add(ticker);
+      return next;
+    });
+  }
+
+  function toggleCollapsed(eventTicker: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(eventTicker)) next.delete(eventTicker);
+      else next.add(eventTicker);
+      return next;
+    });
+  }
+
+  function selectAllVisible(rows: MarketView[]) {
+    setSelected(new Set(rows.map((r) => r.market_ticker)));
+  }
+
+  function clearSelected() {
+    setSelected(new Set());
+  }
 
   return (
     <div className="mx-auto min-h-[100dvh] max-w-6xl px-4 py-8 md:px-6 md:pt-10">
@@ -101,11 +136,11 @@ export default function App() {
             Kalorie Desk
           </p>
           <h1 className="mt-1 max-w-xl text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 md:text-4xl">
-            Model markets and sized bets
+            Pick markets, Kelly-size the book
           </h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-500 dark:text-slate-400">
-            Lambda publishes every scored market. This app sizes optional
-            trades from bankroll and risk of ruin.
+            Past events are hidden. Check markets to include, then size with
+            Kelly under a long-run risk-of-ruin cap.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -131,38 +166,39 @@ export default function App() {
         </div>
       </header>
 
-      <section className="mb-8 grid gap-4 sm:grid-cols-3">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-slate-500">
-            Total bankroll ($)
-          </span>
+      <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Field label="Daily max ($)">
           <input
             type="number"
             min={0}
             step={10}
-            value={bankroll}
-            onChange={(e) => setBankroll(Number(e.target.value) || 0)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+            value={dailyBankroll}
+            onChange={(e) => setDailyBankroll(Number(e.target.value) || 0)}
+            className={inputClass}
           />
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-slate-500">
-            Risk of ruin (max fraction / trade)
-          </span>
+        </Field>
+        <Field label="Max markets / day">
           <input
             type="number"
-            min={0.005}
+            min={1}
+            step={1}
+            value={maxMarkets}
+            onChange={(e) => setMaxMarkets(Number(e.target.value) || 1)}
+            className={inputClass}
+          />
+        </Field>
+        <Field label="Risk of ruin (long-run)">
+          <input
+            type="number"
+            min={0.001}
             max={0.5}
             step={0.005}
             value={riskOfRuin}
             onChange={(e) => setRiskOfRuin(Number(e.target.value) || 0)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+            className={inputClass}
           />
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-slate-500">
-            Min |delta| for trades
-          </span>
+        </Field>
+        <Field label="Min |delta|">
           <input
             type="number"
             min={0}
@@ -170,9 +206,9 @@ export default function App() {
             step={0.005}
             value={minAbsDelta}
             onChange={(e) => setMinAbsDelta(Number(e.target.value) || 0)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+            className={inputClass}
           />
-        </label>
+        </Field>
       </section>
 
       {error ? (
@@ -189,10 +225,11 @@ export default function App() {
               {snapshot.snapshot_id}
             </span>
           </span>
-          <span>{snapshot.model_name}</span>
-          <span>{predictions.length} model rows</span>
+          <span>{markets.length} open markets</span>
+          <span>{selected.size} selected</span>
           <span>
-            {trades.length} sized trades · {money(totalStake)}
+            {trades.length} funded · {money(totalStake)} · Kelly scale{" "}
+            {(scale * 100).toFixed(0)}% · est. RoR {pct(estimatedRoR)}
           </span>
         </div>
       ) : (
@@ -201,12 +238,29 @@ export default function App() {
         </p>
       )}
 
+      <div className="mb-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => selectAllVisible(markets)}
+          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+        >
+          Select all open
+        </button>
+        <button
+          type="button"
+          onClick={clearSelected}
+          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+        >
+          Clear selection
+        </button>
+      </div>
+
       <div className="mb-3 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
         <TabButton active={panel === "markets"} onClick={() => setPanel("markets")}>
-          All markets
+          Markets
         </TabButton>
         <TabButton active={panel === "trades"} onClick={() => setPanel("trades")}>
-          Sized trades
+          Kelly book
         </TabButton>
       </div>
 
@@ -229,7 +283,13 @@ export default function App() {
 
       {panel === "markets" ? (
         view === "delta" ? (
-          <MarketsTable rows={marketsByDelta} />
+          <EventGroups
+            groups={groupMarketsByEvent(marketsByDelta)}
+            collapsed={collapsed}
+            selected={selected}
+            onToggleCollapse={toggleCollapsed}
+            onToggleSelect={toggleSelect}
+          />
         ) : (
           <div className="space-y-8">
             {marketsByDate.map(([date, rows]) => (
@@ -240,36 +300,61 @@ export default function App() {
                     {rows.length} markets
                   </span>
                 </h2>
-                <MarketsTable rows={sortPredictionsByAbsDelta(rows)} />
+                <EventGroups
+                  groups={groupMarketsByEvent(sortByTradeDelta(rows))}
+                  collapsed={collapsed}
+                  selected={selected}
+                  onToggleCollapse={toggleCollapsed}
+                  onToggleSelect={toggleSelect}
+                />
               </div>
             ))}
             {!marketsByDate.length ? (
-              <Empty text="No market predictions in this snapshot." />
+              <Empty text="No open (non-past) markets in this snapshot." />
             ) : null}
           </div>
         )
-      ) : view === "delta" ? (
-        <TradesTable trades={tradesByDelta} />
+      ) : trades.length ? (
+        view === "delta" ? (
+          <TradesTable trades={[...trades].sort((a, b) => b.view.absTradeDelta - a.view.absTradeDelta)} />
+        ) : (
+          <div className="space-y-8">
+            {tradesByDate.map(([date, rows]) => (
+              <div key={date}>
+                <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
+                  {date}
+                  <span className="ml-2 font-normal text-slate-400">
+                    {rows.length} trades ·{" "}
+                    {money(rows.reduce((s, t) => s + t.dollars, 0))}
+                  </span>
+                </h2>
+                <TradesTable trades={rows} />
+              </div>
+            ))}
+          </div>
+        )
       ) : (
-        <div className="space-y-8">
-          {tradesByDate.map(([date, rows]) => (
-            <div key={date}>
-              <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
-                {date}
-                <span className="ml-2 font-normal text-slate-400">
-                  {rows.length} trades ·{" "}
-                  {money(rows.reduce((s, t) => s + t.dollars, 0))}
-                </span>
-              </h2>
-              <TradesTable trades={sortTradesByAbsDelta(rows)} />
-            </div>
-          ))}
-          {!tradesByDate.length ? (
-            <Empty text="No sized trades under these filters." />
-          ) : null}
-        </div>
+        <Empty text="Select markets with executable edge to build a Kelly book." />
       )}
     </div>
+  );
+}
+
+const inputClass =
+  "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950";
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-slate-500">{label}</span>
+      {children}
+    </label>
   );
 }
 
@@ -308,21 +393,82 @@ function Empty({ text }: { text: string }) {
   );
 }
 
-function MarketsTable({ rows }: { rows: PredictionRow[] }) {
-  if (!rows.length) return <Empty text="No market predictions." />;
+function EventGroups({
+  groups,
+  collapsed,
+  selected,
+  onToggleCollapse,
+  onToggleSelect,
+}: {
+  groups: [string, MarketView[]][];
+  collapsed: Set<string>;
+  selected: Set<string>;
+  onToggleCollapse: (eventTicker: string) => void;
+  onToggleSelect: (ticker: string) => void;
+}) {
+  if (!groups.length) return <Empty text="No markets to show." />;
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60">
-      <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+    <div className="space-y-3">
+      {groups.map(([eventTicker, rows]) => {
+        const open = !collapsed.has(eventTicker);
+        const title = rows[0]?.event_title || eventTicker;
+        const date = rows[0]?.eventDate ?? "";
+        return (
+          <div
+            key={eventTicker}
+            className="overflow-hidden rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60"
+          >
+            <button
+              type="button"
+              onClick={() => onToggleCollapse(eventTicker)}
+              className="flex w-full items-center gap-2 px-3 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-slate-900/60"
+            >
+              {open ? <CaretDown size={16} /> : <CaretRight size={16} />}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  {title}
+                </div>
+                <div className="truncate font-mono text-[11px] text-slate-400">
+                  {eventTicker} · {date} · {rows.length} markets
+                </div>
+              </div>
+            </button>
+            {open ? (
+              <MarketsTable
+                rows={rows}
+                selected={selected}
+                onToggleSelect={onToggleSelect}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MarketsTable({
+  rows,
+  selected,
+  onToggleSelect,
+}: {
+  rows: MarketView[];
+  selected: Set<string>;
+  onToggleSelect: (ticker: string) => void;
+}) {
+  return (
+    <div className="overflow-x-auto border-t border-slate-100 dark:border-slate-900">
+      <table className="w-full min-w-[920px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-            <th className="px-3 py-3 font-medium">Market</th>
-            <th className="px-3 py-3 font-medium">Model</th>
-            <th className="px-3 py-3 font-medium">Market mid</th>
-            <th className="px-3 py-3 font-medium">Bid / Ask</th>
-            <th className="px-3 py-3 font-medium">Delta</th>
-            <th className="px-3 py-3 font-medium">Eligible</th>
-            <th className="px-3 py-3 font-medium">Vol</th>
+            <th className="px-3 py-2 font-medium">Phrase</th>
+            <th className="px-3 py-2 font-medium">Model</th>
+            <th className="px-3 py-2 font-medium">Bid / Ask</th>
+            <th className="px-3 py-2 font-medium">Side</th>
+            <th className="px-3 py-2 font-medium">Delta</th>
+            <th className="px-3 py-2 font-medium">Kelly f*</th>
+            <th className="px-3 py-2 text-right font-medium">Pick</th>
           </tr>
         </thead>
         <tbody>
@@ -331,39 +477,40 @@ function MarketsTable({ rows }: { rows: PredictionRow[] }) {
               key={row.market_ticker}
               className="border-b border-slate-100 last:border-0 dark:border-slate-900"
             >
-              <td className="px-3 py-3 align-top">
+              <td className="px-3 py-2.5 align-top">
                 <div className="font-medium text-slate-900 dark:text-slate-100">
                   {row.target_phrase}
-                </div>
-                <div className="mt-0.5 max-w-sm truncate text-xs text-slate-400">
-                  {row.event_title || row.event_ticker}
                 </div>
                 <div className="mt-0.5 font-mono text-[11px] text-slate-400">
                   {row.market_ticker}
                 </div>
               </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
+              <td className="px-3 py-2.5 align-top font-mono tabular-nums">
                 {pct(row.model_probability)}
               </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {pct(row.market_probability)}
-              </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums text-slate-500">
+              <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
                 {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
               </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {row.delta >= 0 ? "+" : ""}
-                {row.delta.toFixed(3)}
+              <td className="px-3 py-2.5 align-top text-xs font-semibold">
+                {row.side ?? "-"}
               </td>
-              <td className="px-3 py-3 align-top text-xs">
-                {row.prediction_eligible == null
+              <td className="px-3 py-2.5 align-top font-mono tabular-nums">
+                {row.tradeDelta === 0
                   ? "-"
-                  : row.prediction_eligible
-                    ? "yes"
-                    : "no"}
+                  : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
               </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums text-slate-500">
-                {row.volume}
+              <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
+                {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
+              </td>
+              <td className="px-3 py-2.5 align-top text-right">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-emerald-600"
+                  checked={selected.has(row.market_ticker)}
+                  disabled={!row.side || row.kellyFraction <= 0}
+                  onChange={() => onToggleSelect(row.market_ticker)}
+                  aria-label={`Select ${row.market_ticker}`}
+                />
               </td>
             </tr>
           ))}
@@ -376,21 +523,17 @@ function MarketsTable({ rows }: { rows: PredictionRow[] }) {
 function TradesTable({
   trades,
 }: {
-  trades: ReturnType<typeof sizeTrades>;
+  trades: ReturnType<typeof sizeSelectedTrades>["trades"];
 }) {
-  if (!trades.length) {
-    return <Empty text="No positive-edge trades under these filters." />;
-  }
-
   return (
     <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60">
-      <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[780px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
             <th className="px-3 py-3 font-medium">Market</th>
             <th className="px-3 py-3 font-medium">Side</th>
             <th className="px-3 py-3 font-medium">Delta</th>
-            <th className="px-3 py-3 font-medium">Edge</th>
+            <th className="px-3 py-3 font-medium">Kelly f</th>
             <th className="px-3 py-3 font-medium">Cost</th>
             <th className="px-3 py-3 font-medium">Contracts</th>
             <th className="px-3 py-3 font-medium">Stake</th>
@@ -399,15 +542,15 @@ function TradesTable({
         <tbody>
           {trades.map((t) => (
             <tr
-              key={t.row.market_ticker}
+              key={t.view.market_ticker}
               className="border-b border-slate-100 last:border-0 dark:border-slate-900"
             >
               <td className="px-3 py-3 align-top">
                 <div className="font-medium text-slate-900 dark:text-slate-100">
-                  {t.row.target_phrase}
+                  {t.view.target_phrase}
                 </div>
                 <div className="mt-0.5 max-w-xs truncate text-xs text-slate-400">
-                  {t.row.event_title || t.row.event_ticker}
+                  {t.view.event_title || t.view.event_ticker}
                 </div>
               </td>
               <td className="px-3 py-3 align-top">
@@ -422,11 +565,10 @@ function TradesTable({
                 </span>
               </td>
               <td className="px-3 py-3 align-top font-mono tabular-nums">
-                {t.row.delta >= 0 ? "+" : ""}
-                {t.row.delta.toFixed(3)}
+                +{t.view.tradeDelta.toFixed(3)}
               </td>
-              <td className="px-3 py-3 align-top font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
-                {pct(t.edge)}
+              <td className="px-3 py-3 align-top font-mono tabular-nums">
+                {pct(t.kellyFraction)}
               </td>
               <td className="px-3 py-3 align-top font-mono tabular-nums">
                 {t.cost.toFixed(2)}

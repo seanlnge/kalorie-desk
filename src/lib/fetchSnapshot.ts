@@ -19,15 +19,5 @@ export async function fetchLatestSnapshot(): Promise<Snapshot> {
   if (!Array.isArray(data.predictions)) {
     throw new Error("Snapshot missing predictions[]");
   }
-  return {
-    ...data,
-    predictions: data.predictions.map((row) => ({
-      ...row,
-      delta: row.delta ?? row.residual_delta ?? 0,
-      abs_delta:
-        row.abs_delta ??
-        Math.abs(row.delta ?? row.residual_delta ?? 0),
-      residual_delta: row.residual_delta ?? row.delta ?? 0,
-    })),
-  };
+  return data;
 }

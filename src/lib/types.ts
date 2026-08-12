@@ -9,10 +9,10 @@ export type PredictionRow = {
   market_probability: number;
   yes_bid: number;
   yes_ask: number;
-  /** Alias of residual_delta from the saved model. */
-  delta: number;
+  /** Model residual (from Lambda); not the trade-edge delta. */
   residual_delta?: number;
-  abs_delta: number;
+  delta?: number;
+  abs_delta?: number;
   volume: number;
   prediction_eligible?: boolean | null;
 };
@@ -29,12 +29,27 @@ export type Snapshot = {
 
 export type TradeSide = "YES" | "NO";
 
+/** Enriched row with executable trade-edge delta (YES vs bid / NO vs ask). */
+export type MarketView = PredictionRow & {
+  eventDate: string;
+  side: TradeSide | null;
+  /** Trade edge delta used for sorting / Kelly. */
+  tradeDelta: number;
+  absTradeDelta: number;
+  cost: number;
+  winProb: number;
+  kellyFraction: number;
+  past: boolean;
+};
+
 export type SizedTrade = {
-  row: PredictionRow;
+  view: MarketView;
   side: TradeSide;
   cost: number;
   edge: number;
+  kellyFraction: number;
   dollars: number;
   contracts: number;
   eventDate: string;
+  expectedRoi: number;
 };
