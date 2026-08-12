@@ -3,18 +3,34 @@ import type { MarketView, PredictionRow, SizedTrade, TradeSide } from "./types";
 export type SizeInputs = {
   /** Max dollars to deploy today across selected markets. */
   dailyBankroll: number;
-  /** Max number of selected markets to fund today. */
-  maxMarkets: number;
   /**
-   * Target long-run bankruptcy probability (0-1).
-   * Stakes are scaled (fractional Kelly) so estimated RoR <= this.
+   * Conviction in [0, 1]. Mapped through a centered sigmoid to Kelly-mix α:
+   * low → flatter (more equal) weights; high → concentrate on highest f*.
    */
-  riskOfRuin: number;
+  conviction: number;
   minAbsDelta: number;
 };
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
+}
+
+export function sigmoid(x: number): number {
+  if (x >= 20) return 1;
+  if (x <= -20) return 0;
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * Map conviction ∈ [0,1] → mix α ∈ (0,1) with a logistic curve centered at 0.5.
+ * steepness≈6 tracks a classic sigmoid from near-flat to near-pure Kelly.
+ */
+export function convictionToMixAlpha(
+  conviction: number,
+  steepness = 6,
+): number {
+  const c = clamp(conviction, 0, 1);
+  return sigmoid(steepness * (2 * c - 1));
 }
 
 export function startOfUtcDay(d = new Date()): Date {
@@ -170,19 +186,37 @@ export function estimateRiskOfRuin(
   return clamp(Math.exp((-2 * mu) / variance), 0, 1);
 }
 
+/** Tickers for executable tomorrow (UTC) markets meeting min |delta|. */
+export function tomorrowTradeTickers(
+  markets: MarketView[],
+  minAbsDelta: number,
+  now = new Date(),
+): string[] {
+  const tomorrow = tomorrowUtcDateKey(now);
+  const minAbs = Math.max(0, minAbsDelta);
+  return markets
+    .filter(
+      (m) =>
+        m.eventDate === tomorrow &&
+        m.side != null &&
+        m.kellyFraction > 0 &&
+        m.absTradeDelta >= minAbs,
+    )
+    .map((m) => m.market_ticker);
+}
+
 /**
- * Kelly-optimize selected markets:
- * 1) Keep top `maxMarkets` by full-Kelly fraction (edge quality)
- * 2) Binary-search fractional Kelly scale so estimated RoR ≤ target
- * 3) Cap total dollars at dailyBankroll
+ * Size selected markets to spend ~dailyBankroll:
+ * 1) Keep selected markets with executable edge
+ * 2) Split bankroll by mix α = sigmoid(conviction): (1-α)·uniform + α·kelly
+ * 3) Floor to whole contracts, then greedily spend leftover on highest-Kelly names
  */
 export function sizeSelectedTrades(
   selected: MarketView[],
   inputs: SizeInputs,
 ): { trades: SizedTrade[]; scale: number; estimatedRoR: number } {
   const dailyBankroll = Math.max(0, inputs.dailyBankroll);
-  const maxMarkets = Math.max(1, Math.floor(inputs.maxMarkets));
-  const targetRoR = clamp(inputs.riskOfRuin, 0.0001, 0.99);
+  const alpha = convictionToMixAlpha(inputs.conviction);
   const minAbs = Math.max(0, inputs.minAbsDelta);
 
   const candidates = selected
@@ -193,73 +227,65 @@ export function sizeSelectedTrades(
         row.absTradeDelta >= minAbs &&
         row.cost > 0,
     )
-    .sort((a, b) => b.kellyFraction - a.kellyFraction)
-    .slice(0, maxMarkets);
+    .sort((a, b) => b.kellyFraction - a.kellyFraction);
 
   if (!candidates.length || dailyBankroll <= 0) {
     return { trades: [], scale: 0, estimatedRoR: 0 };
   }
 
-  const fullKelly = candidates.map((row) => ({
-    view: row,
-    fStar: row.kellyFraction,
+  const fStars = candidates.map((row) => row.kellyFraction);
+  const fSum = fStars.reduce((s, f) => s + f, 0);
+  if (fSum <= 0) {
+    return { trades: [], scale: 0, estimatedRoR: 0 };
+  }
+
+  const weights = fStars.map(
+    (f) => (1 - alpha) / candidates.length + (alpha * f) / fSum,
+  );
+  const wSum = weights.reduce((s, w) => s + w, 0);
+  const targets = candidates.map((view, i) => ({
+    view,
+    weight: weights[i] / wSum,
+    dollarsTarget: dailyBankroll * (weights[i] / wSum),
   }));
 
-  const rorAt = (scale: number): number =>
-    estimateRiskOfRuin(
-      fullKelly.map(({ view, fStar }) => ({
-        p: view.winProb,
-        cost: view.cost,
-        fraction: scale * fStar,
-      })),
-    );
+  let remaining = dailyBankroll;
+  const sized = targets.map(({ view, weight, dollarsTarget }) => {
+    const cost = view.cost;
+    const contracts = Math.floor(Math.min(dollarsTarget, remaining) / cost);
+    const dollars = contracts * cost;
+    remaining -= dollars;
+    return { view, weight, cost, contracts, dollars };
+  });
 
-  // Binary search largest scale in (0,1] with RoR <= target
-  let lo = 0;
-  let hi = 1;
-  let best = 0;
-  for (let i = 0; i < 40; i += 1) {
-    const mid = (lo + hi) / 2;
-    if (rorAt(mid) <= targetRoR) {
-      best = mid;
-      lo = mid;
-    } else {
-      hi = mid;
+  // Spend leftover bankroll on highest-Kelly names (whole contracts).
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const item of sized) {
+      if (remaining + 1e-9 < item.cost) continue;
+      item.contracts += 1;
+      item.dollars += item.cost;
+      remaining -= item.cost;
+      progressed = true;
+      if (remaining < Math.min(...sized.map((s) => s.cost))) break;
     }
   }
 
-  // If even tiny scale exceeds RoR (almost never), fall back to tiny stake
-  let scale = best;
-  if (scale <= 0 && rorAt(1e-6) <= targetRoR) scale = 1e-6;
-
-  let remaining = dailyBankroll;
   const trades: SizedTrade[] = [];
-  // First pass: uncapped kelly dollars, then rescale to bankroll
-  const raw = fullKelly.map(({ view, fStar }) => {
-    const fraction = scale * fStar;
-    return { view, fraction, dollars: dailyBankroll * fraction };
-  });
-  const rawSum = raw.reduce((s, r) => s + r.dollars, 0);
-  const bankrollScale = rawSum > dailyBankroll ? dailyBankroll / rawSum : 1;
-
-  for (const item of raw) {
-    const dollarsTarget = item.dollars * bankrollScale;
-    const cost = item.view.cost;
-    const contracts = Math.floor(Math.min(dollarsTarget, remaining) / cost);
-    if (contracts < 1) continue;
-    const dollars = contracts * cost;
-    remaining -= dollars;
-    const edge = item.view.winProb - cost;
+  for (const item of sized) {
+    if (item.contracts < 1) continue;
+    const edge = item.view.winProb - item.cost;
     trades.push({
       view: item.view,
       side: item.view.side as TradeSide,
-      cost,
+      cost: item.cost,
       edge,
-      kellyFraction: item.fraction * bankrollScale,
-      dollars,
-      contracts,
+      kellyFraction: item.dollars / dailyBankroll,
+      dollars: item.dollars,
+      contracts: item.contracts,
       eventDate: item.view.eventDate,
-      expectedRoi: edge / cost,
+      expectedRoi: edge / item.cost,
     });
   }
 
@@ -271,7 +297,7 @@ export function sizeSelectedTrades(
     })),
   );
 
-  return { trades, scale: scale * bankrollScale, estimatedRoR };
+  return { trades, scale: alpha, estimatedRoR };
 }
 
 export function groupMarketsByEvent(

@@ -1,13 +1,13 @@
 # Kalorie Desk
 
-Reads Kalorie S3 snapshots and shows **open** scored markets (past event days hidden). Check markets to include, then Kelly-size a daily book under a long-run risk-of-ruin cap.
+Reads Kalorie S3 snapshots and shows **open** scored markets (past event days hidden). Check markets to include, then Kelly-size a daily book.
 
 ### Sizing
 
 - **Delta:** YES vs bid when `model > yes_bid`; NO vs ask when `model < yes_ask` (NO ask = `1 - yes_bid`)
 - **Kelly:** `f* = (p - c) / (1 - c)` at executable prices (YES at ask, NO at `1 - bid`)
-- **Daily max + max markets:** fund at most N selected names, total stake ≤ daily bankroll
-- **Risk of ruin:** scale fractional Kelly so estimated long-run bankruptcy prob `≈ exp(-2μ/σ²)` ≤ target
+- **Daily max:** deploy ~full daily bankroll across selected markets
+- **Conviction:** `α = sigmoid(6·(2c-1))` blends equal weight ↔ pure Kelly mix; RoR is reported, not an input
 
 ## How data is pulled (important for Vercel)
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  convictionToMixAlpha,
   enrichMarket,
   estimateRiskOfRuin,
   isPastEvent,
@@ -52,7 +53,7 @@ describe("isPastEvent", () => {
 });
 
 describe("sizeSelectedTrades", () => {
-  it("respects max markets and bankroll", () => {
+  it("deploys nearly all of daily bankroll", () => {
     const views = [
       enrichMarket(
         row({
@@ -79,15 +80,18 @@ describe("sizeSelectedTrades", () => {
         }),
       ),
     ];
-    const { trades, estimatedRoR } = sizeSelectedTrades(views, {
-      dailyBankroll: 100,
-      maxMarkets: 2,
-      riskOfRuin: 0.2,
+    const bankroll = 100;
+    const { trades } = sizeSelectedTrades(views, {
+      dailyBankroll: bankroll,
+      conviction: 0.55,
       minAbsDelta: 0.01,
     });
-    expect(trades.length).toBeLessThanOrEqual(2);
-    expect(trades.reduce((s, t) => s + t.dollars, 0)).toBeLessThanOrEqual(100);
-    expect(estimatedRoR).toBeLessThanOrEqual(0.2 + 1e-6);
+    expect(trades.length).toBeGreaterThan(0);
+    const spent = trades.reduce((s, t) => s + t.dollars, 0);
+    const maxCost = Math.max(...trades.map((t) => t.cost));
+    expect(spent).toBeLessThanOrEqual(bankroll + 1e-9);
+    // Leftover should be less than one contract on the cheapest name.
+    expect(bankroll - spent).toBeLessThan(maxCost);
   });
 });
 
@@ -96,5 +100,16 @@ describe("estimateRiskOfRuin", () => {
     expect(
       estimateRiskOfRuin([{ p: 0.4, cost: 0.5, fraction: 0.1 }]),
     ).toBe(1);
+  });
+});
+
+describe("convictionToMixAlpha", () => {
+  it("follows a centered sigmoid", () => {
+    expect(convictionToMixAlpha(0.5)).toBeCloseTo(0.5, 5);
+    expect(convictionToMixAlpha(0)).toBeLessThan(0.05);
+    expect(convictionToMixAlpha(1)).toBeGreaterThan(0.95);
+    expect(convictionToMixAlpha(0.75)).toBeGreaterThan(
+      convictionToMixAlpha(0.5),
+    );
   });
 });

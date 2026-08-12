@@ -1,27 +1,31 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
-  ChartLineUp,
-  CalendarBlank,
   UploadSimple,
 } from "@phosphor-icons/react";
+import { ExpectedPnlChart } from "./components/ExpectedPnlChart";
 import { fetchLatestSnapshot } from "./lib/fetchSnapshot";
 import {
   activeMarkets,
   groupMarketsByDate,
   groupMarketsByEvent,
-  groupTradesByDate,
   money,
   pct,
   sizeSelectedTrades,
   sortByTradeDelta,
-  tomorrowUtcDateKey,
+  tomorrowTradeTickers,
 } from "./lib/sizing";
 import type { MarketView, Snapshot } from "./lib/types";
 
-type ViewMode = "delta" | "date";
 type Panel = "markets" | "trades";
 
 function readNumber(
@@ -37,18 +41,26 @@ function readNumber(
   return next;
 }
 
+function blurOnEnter(e: { key: string; currentTarget: HTMLElement }) {
+  if (e.key === "Enter") e.currentTarget.blur();
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dailyBankroll, setDailyBankroll] = useState(500);
-  const [maxMarkets, setMaxMarkets] = useState(8);
-  const [riskOfRuin, setRiskOfRuin] = useState(0.05);
+  const [dailyBankroll, setDailyBankroll] = useState(100);
+  const [conviction, setConviction] = useState(0.55);
   const [minAbsDelta, setMinAbsDelta] = useState(0.02);
-  const [view, setView] = useState<ViewMode>("date");
   const [panel, setPanel] = useState<Panel>("markets");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [actionBarHeight, setActionBarHeight] = useState(0);
+  const actionBarRef = useRef<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  function selectTomorrowFrom(rows: MarketView[], minDelta = minAbsDelta) {
+    setSelected(new Set(tomorrowTradeTickers(rows, minDelta)));
+  }
 
   async function loadRemote() {
     setLoading(true);
@@ -56,7 +68,7 @@ export default function App() {
     try {
       const next = await fetchLatestSnapshot();
       setSnapshot(next);
-      setSelected(new Set());
+      selectTomorrowFrom(activeMarkets(next.predictions ?? []));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load snapshot");
     } finally {
@@ -80,7 +92,7 @@ export default function App() {
           throw new Error("JSON missing predictions[]");
         }
         setSnapshot(data);
-        setSelected(new Set());
+        selectTomorrowFrom(activeMarkets(data.predictions ?? []));
       } catch (err) {
         setError(err instanceof Error ? err.message : "Invalid JSON");
       } finally {
@@ -104,17 +116,33 @@ export default function App() {
     () =>
       sizeSelectedTrades(selectedViews, {
         dailyBankroll,
-        maxMarkets,
-        riskOfRuin,
+        conviction,
         minAbsDelta,
       }),
-    [selectedViews, dailyBankroll, maxMarkets, riskOfRuin, minAbsDelta],
+    [selectedViews, dailyBankroll, conviction, minAbsDelta],
   );
 
   const totalStake = trades.reduce((sum, t) => sum + t.dollars, 0);
-  const marketsByDelta = sortByTradeDelta(markets);
+
+  useLayoutEffect(() => {
+    if (selected.size === 0) {
+      setActionBarHeight(0);
+      return;
+    }
+    const el = actionBarRef.current;
+    if (!el) return;
+    const sync = () => setActionBarHeight(el.getBoundingClientRect().height);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selected.size, trades.length, totalStake]);
+
   const marketsByDate = groupMarketsByDate(markets);
-  const tradesByDate = groupTradesByDate(trades);
+  const tradesByDelta = useMemo(
+    () => [...trades].sort((a, b) => b.view.absTradeDelta - a.view.absTradeDelta),
+    [trades],
+  );
 
   function toggleSelect(ticker: string) {
     setSelected((prev) => {
@@ -139,17 +167,7 @@ export default function App() {
   }
 
   function selectAllTomorrow() {
-    const tomorrow = tomorrowUtcDateKey();
-    const tickers = markets
-      .filter(
-        (m) =>
-          m.eventDate === tomorrow &&
-          m.side != null &&
-          m.kellyFraction > 0 &&
-          m.absTradeDelta >= minAbsDelta,
-      )
-      .map((m) => m.market_ticker);
-    setSelected(new Set(tickers));
+    selectTomorrowFrom(markets);
   }
 
   function clearSelected() {
@@ -161,19 +179,13 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const tomorrowCount = useMemo(() => {
-    const tomorrow = tomorrowUtcDateKey();
-    return markets.filter(
-      (m) =>
-        m.eventDate === tomorrow &&
-        m.side != null &&
-        m.kellyFraction > 0 &&
-        m.absTradeDelta >= minAbsDelta,
-    ).length;
-  }, [markets, minAbsDelta]);
+  const tomorrowCount = useMemo(
+    () => tomorrowTradeTickers(markets, minAbsDelta).length,
+    [markets, minAbsDelta],
+  );
 
   return (
-    <div className="mx-auto min-h-[100dvh] w-full max-w-6xl px-3 py-6 pb-[calc(7rem+env(safe-area-inset-bottom))] sm:px-4 md:px-6 md:py-8 md:pt-10">
+    <div className="mx-auto min-h-[100dvh] w-full max-w-6xl px-3 py-6 pb-6 sm:px-4 md:px-6 md:py-8 md:pb-8 md:pt-10">
       <header className="mb-8 flex flex-col gap-4 border-b border-slate-200 pb-6 dark:border-slate-800 sm:mb-10 sm:pb-8 md:flex-row md:items-end md:justify-between">
         <div className="min-w-0">
           <p className="text-sm font-medium tracking-tight text-emerald-700 dark:text-emerald-400">
@@ -184,7 +196,7 @@ export default function App() {
           </h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-500 dark:text-slate-400">
             Past events are hidden. Check markets to include, then size with
-            Kelly under a long-run risk-of-ruin cap.
+            Kelly weighted by conviction.
           </p>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
@@ -210,7 +222,7 @@ export default function App() {
         </div>
       </header>
 
-      <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="mb-8 grid gap-4 sm:grid-cols-3">
         <Field label="Daily max ($)">
           <input
             type="number"
@@ -220,35 +232,23 @@ export default function App() {
             onBlur={(e) =>
               setDailyBankroll(readNumber(e.target.value, dailyBankroll, { min: 0 }))
             }
+            onKeyDown={blurOnEnter}
             className={inputClass}
           />
         </Field>
-        <Field label="Max markets / day">
+        <Field label="Conviction (0–1)">
           <input
             type="number"
-            min={1}
-            step={1}
-            defaultValue={maxMarkets}
+            min={0}
+            max={1}
+            step={0.05}
+            defaultValue={conviction}
             onBlur={(e) =>
-              setMaxMarkets(
-                Math.floor(readNumber(e.target.value, maxMarkets, { min: 1 })),
+              setConviction(
+                readNumber(e.target.value, conviction, { min: 0, max: 1 }),
               )
             }
-            className={inputClass}
-          />
-        </Field>
-        <Field label="Risk of ruin (long-run)">
-          <input
-            type="number"
-            min={0.001}
-            max={0.5}
-            step={0.005}
-            defaultValue={riskOfRuin}
-            onBlur={(e) =>
-              setRiskOfRuin(
-                readNumber(e.target.value, riskOfRuin, { min: 0.001, max: 0.5 }),
-              )
-            }
+            onKeyDown={blurOnEnter}
             className={inputClass}
           />
         </Field>
@@ -264,6 +264,7 @@ export default function App() {
                 readNumber(e.target.value, minAbsDelta, { min: 0, max: 1 }),
               )
             }
+            onKeyDown={blurOnEnter}
             className={inputClass}
           />
         </Field>
@@ -287,8 +288,8 @@ export default function App() {
             {markets.length} open · {selected.size} selected
           </span>
           <span className="break-words">
-            {trades.length} funded · {money(totalStake)} · Kelly{" "}
-            {(scale * 100).toFixed(0)}% · RoR {pct(estimatedRoR)}
+            {trades.length} funded · {money(totalStake)} / {money(dailyBankroll)}{" "}
+            · α {(scale * 100).toFixed(0)}% · RoR {pct(estimatedRoR)}
           </span>
         </div>
       ) : (
@@ -322,7 +323,7 @@ export default function App() {
         </button>
       </div>
 
-      <div className="mb-3 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
+      <div className="mb-4 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
         <TabButton active={panel === "markets"} onClick={() => setPanel("markets")}>
           Markets
         </TabButton>
@@ -331,96 +332,64 @@ export default function App() {
         </TabButton>
       </div>
 
-      <div className="mb-4 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
-        <TabButton
-          active={view === "delta"}
-          onClick={() => setView("delta")}
-          icon={<ChartLineUp size={16} weight="bold" />}
-        >
-          <span className="sm:hidden">Delta</span>
-          <span className="hidden sm:inline">Highest delta</span>
-        </TabButton>
-        <TabButton
-          active={view === "date"}
-          onClick={() => setView("date")}
-          icon={<CalendarBlank size={16} weight="bold" />}
-        >
-          <span className="sm:hidden">Date</span>
-          <span className="hidden sm:inline">By event date</span>
-        </TabButton>
-      </div>
-
       {panel === "markets" ? (
-        view === "delta" ? (
-          <EventGroups
-            groups={groupMarketsByEvent(marketsByDelta)}
-            collapsed={collapsed}
-            selected={selected}
-            onToggleCollapse={toggleCollapsed}
-            onToggleSelect={toggleSelect}
-          />
-        ) : (
-          <div className="space-y-8">
-            {marketsByDate.map(([date, rows]) => (
-              <div key={date}>
-                <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
-                  {date}
-                  <span className="ml-2 font-normal text-slate-400">
-                    {rows.length} markets
-                  </span>
-                </h2>
-                <EventGroups
-                  groups={groupMarketsByEvent(sortByTradeDelta(rows))}
-                  collapsed={collapsed}
-                  selected={selected}
-                  onToggleCollapse={toggleCollapsed}
-                  onToggleSelect={toggleSelect}
-                />
-              </div>
-            ))}
-            {!marketsByDate.length ? (
-              <Empty text="No open (non-past) markets in this snapshot." />
-            ) : null}
-          </div>
-        )
+        <div className="space-y-8">
+          {marketsByDate.map(([date, rows]) => (
+            <div key={date}>
+              <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
+                {date}
+                <span className="ml-2 font-normal text-slate-400">
+                  {rows.length} markets
+                </span>
+              </h2>
+              <EventGroups
+                groups={groupMarketsByEvent(sortByTradeDelta(rows))}
+                collapsed={collapsed}
+                selected={selected}
+                onToggleCollapse={toggleCollapsed}
+                onToggleSelect={toggleSelect}
+              />
+            </div>
+          ))}
+          {!marketsByDate.length ? (
+            <Empty text="No open (non-past) markets in this snapshot." />
+          ) : null}
+        </div>
       ) : trades.length ? (
-        view === "delta" ? (
-          <TradesTable trades={[...trades].sort((a, b) => b.view.absTradeDelta - a.view.absTradeDelta)} />
-        ) : (
-          <div className="space-y-8">
-            {tradesByDate.map(([date, rows]) => (
-              <div key={date}>
-                <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
-                  {date}
-                  <span className="ml-2 font-normal text-slate-400">
-                    {rows.length} trades ·{" "}
-                    {money(rows.reduce((s, t) => s + t.dollars, 0))}
-                  </span>
-                </h2>
-                <TradesTable trades={rows} />
-              </div>
-            ))}
-          </div>
-        )
+        <>
+          <ExpectedPnlChart trades={trades} />
+          <TradesTable trades={tradesByDelta} />
+        </>
       ) : (
         <Empty text="Select markets with executable edge to build a Kelly book." />
       )}
 
       {selected.size > 0 ? (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 sm:px-4">
-          <div className="mx-auto flex max-w-6xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-            <p className="min-w-0 text-center text-xs text-slate-500 sm:text-left sm:text-sm dark:text-slate-400">
-              {selected.size} selected · {trades.length} sized · {money(totalStake)}
-            </p>
-            <button
-              type="button"
-              onClick={showTradeAmounts}
-              className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition active:scale-[0.98] sm:w-auto sm:py-2.5"
-            >
-              Show trade amounts
-            </button>
+        <>
+          <div
+            aria-hidden
+            className="shrink-0"
+            style={{ height: actionBarHeight + 24 }}
+          />
+          <div
+            ref={actionBarRef}
+            className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 sm:px-4"
+          >
+            <div className="mx-auto flex max-w-6xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <p className="min-w-0 text-center text-xs text-slate-500 sm:text-left sm:text-sm dark:text-slate-400">
+                {selected.size} selected · {trades.length} sized ·{" "}
+                {money(totalStake)}
+              </p>
+              <button
+                type="button"
+                onClick={showTradeAmounts}
+                className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition active:scale-[0.98] sm:w-auto sm:py-2.5"
+              >
+                Show trade amounts
+              </button>
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
     </div>
   );
