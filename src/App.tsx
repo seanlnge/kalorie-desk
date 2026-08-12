@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
   CalendarBlank,
@@ -7,17 +7,18 @@ import {
 } from "@phosphor-icons/react";
 import { fetchLatestSnapshot } from "./lib/fetchSnapshot";
 import {
-  groupByDate,
+  groupPredictionsByDate,
+  groupTradesByDate,
   money,
   pct,
   sizeTrades,
-  sortByAbsDelta,
+  sortPredictionsByAbsDelta,
+  sortTradesByAbsDelta,
 } from "./lib/sizing";
-import type { Snapshot } from "./lib/types";
+import type { PredictionRow, Snapshot } from "./lib/types";
 
 type ViewMode = "delta" | "date";
-
-const DEFAULT_BASE = import.meta.env.VITE_SNAPSHOT_BASE_URL ?? "";
+type Panel = "markets" | "trades";
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -27,16 +28,13 @@ export default function App() {
   const [riskOfRuin, setRiskOfRuin] = useState(0.05);
   const [minAbsDelta, setMinAbsDelta] = useState(0.03);
   const [view, setView] = useState<ViewMode>("delta");
+  const [panel, setPanel] = useState<Panel>("markets");
 
   async function loadRemote() {
-    if (!DEFAULT_BASE) {
-      setError("Set VITE_SNAPSHOT_BASE_URL in .env");
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
-      setSnapshot(await fetchLatestSnapshot(DEFAULT_BASE));
+      setSnapshot(await fetchLatestSnapshot());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load snapshot");
     } finally {
@@ -63,7 +61,10 @@ export default function App() {
           ...data,
           predictions: data.predictions.map((row) => ({
             ...row,
-            abs_delta: row.abs_delta ?? Math.abs(row.delta),
+            delta: row.delta ?? row.residual_delta ?? 0,
+            abs_delta:
+              row.abs_delta ??
+              Math.abs(row.delta ?? row.residual_delta ?? 0),
           })),
         });
       } catch (err) {
@@ -75,35 +76,36 @@ export default function App() {
     reader.readAsText(file);
   }
 
+  const predictions = snapshot?.predictions ?? [];
   const trades = useMemo(
     () =>
-      snapshot
-        ? sizeTrades(snapshot.predictions, {
-            bankroll,
-            riskOfRuin,
-            minAbsDelta,
-          })
-        : [],
-    [snapshot, bankroll, riskOfRuin, minAbsDelta],
+      sizeTrades(predictions, {
+        bankroll,
+        riskOfRuin,
+        minAbsDelta,
+      }),
+    [predictions, bankroll, riskOfRuin, minAbsDelta],
   );
 
   const totalStake = trades.reduce((sum, t) => sum + t.dollars, 0);
-  const byDelta = sortByAbsDelta(trades);
-  const byDate = groupByDate(trades);
+  const marketsByDelta = sortPredictionsByAbsDelta(predictions);
+  const marketsByDate = groupPredictionsByDate(predictions);
+  const tradesByDelta = sortTradesByAbsDelta(trades);
+  const tradesByDate = groupTradesByDate(trades);
 
   return (
-    <div className="mx-auto min-h-[100dvh] max-w-5xl px-4 py-8 md:px-6 md:pt-10">
+    <div className="mx-auto min-h-[100dvh] max-w-6xl px-4 py-8 md:px-6 md:pt-10">
       <header className="mb-10 flex flex-col gap-4 border-b border-slate-200 pb-8 dark:border-slate-800 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="text-sm font-medium tracking-tight text-emerald-700 dark:text-emerald-400">
             Kalorie Desk
           </p>
           <h1 className="mt-1 max-w-xl text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 md:text-4xl">
-            Tomorrow&apos;s mention bets
+            Model markets and sized bets
           </h1>
-          <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-500 dark:text-slate-400">
-            Size trades from live model deltas. Risk of ruin caps each name;
-            bankroll is split by |delta|.
+          <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+            Lambda publishes every scored market. This app sizes optional
+            trades from bankroll and risk of ruin.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -159,7 +161,7 @@ export default function App() {
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-slate-500">
-            Min |delta|
+            Min |delta| for trades
           </span>
           <input
             type="number"
@@ -188,9 +190,9 @@ export default function App() {
             </span>
           </span>
           <span>{snapshot.model_name}</span>
-          <span>{snapshot.prediction_count} markets</span>
+          <span>{predictions.length} model rows</span>
           <span>
-            {trades.length} trades · {money(totalStake)} allocated
+            {trades.length} sized trades · {money(totalStake)}
           </span>
         </div>
       ) : (
@@ -199,38 +201,58 @@ export default function App() {
         </p>
       )}
 
-      <div className="mb-4 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
-        <button
-          type="button"
-          onClick={() => setView("delta")}
-          className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
-            view === "delta"
-              ? "bg-emerald-600 text-white"
-              : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900"
-          }`}
-        >
-          <ChartLineUp size={16} weight="bold" />
-          Highest delta
-        </button>
-        <button
-          type="button"
-          onClick={() => setView("date")}
-          className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
-            view === "date"
-              ? "bg-emerald-600 text-white"
-              : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900"
-          }`}
-        >
-          <CalendarBlank size={16} weight="bold" />
-          By event date
-        </button>
+      <div className="mb-3 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
+        <TabButton active={panel === "markets"} onClick={() => setPanel("markets")}>
+          All markets
+        </TabButton>
+        <TabButton active={panel === "trades"} onClick={() => setPanel("trades")}>
+          Sized trades
+        </TabButton>
       </div>
 
-      {view === "delta" ? (
-        <TradeTable trades={byDelta} />
+      <div className="mb-4 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-950">
+        <TabButton
+          active={view === "delta"}
+          onClick={() => setView("delta")}
+          icon={<ChartLineUp size={16} weight="bold" />}
+        >
+          Highest delta
+        </TabButton>
+        <TabButton
+          active={view === "date"}
+          onClick={() => setView("date")}
+          icon={<CalendarBlank size={16} weight="bold" />}
+        >
+          By event date
+        </TabButton>
+      </div>
+
+      {panel === "markets" ? (
+        view === "delta" ? (
+          <MarketsTable rows={marketsByDelta} />
+        ) : (
+          <div className="space-y-8">
+            {marketsByDate.map(([date, rows]) => (
+              <div key={date}>
+                <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
+                  {date}
+                  <span className="ml-2 font-normal text-slate-400">
+                    {rows.length} markets
+                  </span>
+                </h2>
+                <MarketsTable rows={sortPredictionsByAbsDelta(rows)} />
+              </div>
+            ))}
+            {!marketsByDate.length ? (
+              <Empty text="No market predictions in this snapshot." />
+            ) : null}
+          </div>
+        )
+      ) : view === "delta" ? (
+        <TradesTable trades={tradesByDelta} />
       ) : (
         <div className="space-y-8">
-          {byDate.map(([date, rows]) => (
+          {tradesByDate.map(([date, rows]) => (
             <div key={date}>
               <h2 className="mb-3 text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
                 {date}
@@ -239,11 +261,11 @@ export default function App() {
                   {money(rows.reduce((s, t) => s + t.dollars, 0))}
                 </span>
               </h2>
-              <TradeTable trades={sortByAbsDelta(rows)} />
+              <TradesTable trades={sortTradesByAbsDelta(rows)} />
             </div>
           ))}
-          {!byDate.length ? (
-            <p className="text-sm text-slate-500">No trades under these filters.</p>
+          {!tradesByDate.length ? (
+            <Empty text="No sized trades under these filters." />
           ) : null}
         </div>
       )}
@@ -251,17 +273,113 @@ export default function App() {
   );
 }
 
-function TradeTable({
+function TabButton({
+  active,
+  onClick,
+  children,
+  icon,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  icon?: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
+        active
+          ? "bg-emerald-600 text-white"
+          : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900"
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function Empty({ text }: { text: string }) {
+  return (
+    <p className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700">
+      {text}
+    </p>
+  );
+}
+
+function MarketsTable({ rows }: { rows: PredictionRow[] }) {
+  if (!rows.length) return <Empty text="No market predictions." />;
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60">
+      <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+            <th className="px-3 py-3 font-medium">Market</th>
+            <th className="px-3 py-3 font-medium">Model</th>
+            <th className="px-3 py-3 font-medium">Market mid</th>
+            <th className="px-3 py-3 font-medium">Bid / Ask</th>
+            <th className="px-3 py-3 font-medium">Delta</th>
+            <th className="px-3 py-3 font-medium">Eligible</th>
+            <th className="px-3 py-3 font-medium">Vol</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.market_ticker}
+              className="border-b border-slate-100 last:border-0 dark:border-slate-900"
+            >
+              <td className="px-3 py-3 align-top">
+                <div className="font-medium text-slate-900 dark:text-slate-100">
+                  {row.target_phrase}
+                </div>
+                <div className="mt-0.5 max-w-sm truncate text-xs text-slate-400">
+                  {row.event_title || row.event_ticker}
+                </div>
+                <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+                  {row.market_ticker}
+                </div>
+              </td>
+              <td className="px-3 py-3 align-top font-mono tabular-nums">
+                {pct(row.model_probability)}
+              </td>
+              <td className="px-3 py-3 align-top font-mono tabular-nums">
+                {pct(row.market_probability)}
+              </td>
+              <td className="px-3 py-3 align-top font-mono tabular-nums text-slate-500">
+                {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
+              </td>
+              <td className="px-3 py-3 align-top font-mono tabular-nums">
+                {row.delta >= 0 ? "+" : ""}
+                {row.delta.toFixed(3)}
+              </td>
+              <td className="px-3 py-3 align-top text-xs">
+                {row.prediction_eligible == null
+                  ? "-"
+                  : row.prediction_eligible
+                    ? "yes"
+                    : "no"}
+              </td>
+              <td className="px-3 py-3 align-top font-mono tabular-nums text-slate-500">
+                {row.volume}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TradesTable({
   trades,
 }: {
   trades: ReturnType<typeof sizeTrades>;
 }) {
   if (!trades.length) {
-    return (
-      <p className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700">
-        No positive-edge trades under these filters.
-      </p>
-    );
+    return <Empty text="No positive-edge trades under these filters." />;
   }
 
   return (
@@ -290,9 +408,6 @@ function TradeTable({
                 </div>
                 <div className="mt-0.5 max-w-xs truncate text-xs text-slate-400">
                   {t.row.event_title || t.row.event_ticker}
-                </div>
-                <div className="mt-0.5 font-mono text-[11px] text-slate-400">
-                  {t.row.market_ticker}
                 </div>
               </td>
               <td className="px-3 py-3 align-top">

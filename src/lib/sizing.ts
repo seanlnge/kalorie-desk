@@ -17,7 +17,6 @@ export function eventDateKey(row: PredictionRow): string {
       return d.toISOString().slice(0, 10);
     }
   }
-  // Fallback: parse ...-26APR30 from event ticker
   const match = row.event_ticker.match(/-(\d{2}[A-Z]{3}\d{2})$/i);
   return match ? match[1].toUpperCase() : "unknown";
 }
@@ -38,9 +37,7 @@ export function edgeForSide(row: PredictionRow, side: TradeSide): number {
 
 /**
  * Allocate bankroll across markets with |delta| >= minAbsDelta.
- * - Weights by |delta|
- * - Caps each trade at bankroll * riskOfRuin (simple RoR fraction cap)
- * - Frontend-only; Lambda only supplies delta
+ * Frontend-only; Lambda publishes every market prediction.
  */
 export function sizeTrades(
   predictions: PredictionRow[],
@@ -90,7 +87,20 @@ export function sizeTrades(
   return sized;
 }
 
-export function groupByDate(trades: SizedTrade[]): [string, SizedTrade[]][] {
+export function groupPredictionsByDate(
+  rows: PredictionRow[],
+): [string, PredictionRow[]][] {
+  const map = new Map<string, PredictionRow[]>();
+  for (const row of rows) {
+    const key = eventDateKey(row);
+    const list = map.get(key) ?? [];
+    list.push(row);
+    map.set(key, list);
+  }
+  return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+export function groupTradesByDate(trades: SizedTrade[]): [string, SizedTrade[]][] {
   const map = new Map<string, SizedTrade[]>();
   for (const trade of trades) {
     const list = map.get(trade.eventDate) ?? [];
@@ -100,7 +110,11 @@ export function groupByDate(trades: SizedTrade[]): [string, SizedTrade[]][] {
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
-export function sortByAbsDelta(trades: SizedTrade[]): SizedTrade[] {
+export function sortPredictionsByAbsDelta(rows: PredictionRow[]): PredictionRow[] {
+  return [...rows].sort((a, b) => b.abs_delta - a.abs_delta);
+}
+
+export function sortTradesByAbsDelta(trades: SizedTrade[]): SizedTrade[] {
   return [...trades].sort((a, b) => b.row.abs_delta - a.row.abs_delta);
 }
 

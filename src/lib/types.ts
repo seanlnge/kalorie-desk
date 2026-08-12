@@ -9,9 +9,12 @@ export type PredictionRow = {
   market_probability: number;
   yes_bid: number;
   yes_ask: number;
+  /** Alias of residual_delta from the saved model. */
   delta: number;
+  residual_delta?: number;
   abs_delta: number;
   volume: number;
+  prediction_eligible?: boolean | null;
 };
 
 export type Snapshot = {
