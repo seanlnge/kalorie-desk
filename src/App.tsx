@@ -18,13 +18,17 @@ import {
   activeMarkets,
   groupMarketsByDate,
   groupMarketsByEvent,
+  groupTradesByMarket,
+  marketDisplayName,
   money,
   pct,
+  pickableTradeTickers,
+  sameTickerSet,
   sizeSelectedTrades,
   sortByTradeDelta,
   tomorrowTradeTickers,
 } from "./lib/sizing";
-import type { MarketView, Snapshot } from "./lib/types";
+import type { MarketView, SizedTrade, Snapshot } from "./lib/types";
 
 type Panel = "markets" | "trades";
 
@@ -58,8 +62,20 @@ export default function App() {
   const actionBarRef = useRef<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
+  function selectTickersFrom(rows: MarketView[], tickers: string[]) {
+    const chosen = new Set(tickers);
+    setSelected(chosen);
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      for (const m of rows) {
+        if (chosen.has(m.market_ticker)) next.delete(m.event_ticker);
+      }
+      return next;
+    });
+  }
+
   function selectTomorrowFrom(rows: MarketView[], minDelta = minAbsDelta) {
-    setSelected(new Set(tomorrowTradeTickers(rows, minDelta)));
+    selectTickersFrom(rows, tomorrowTradeTickers(rows, minDelta));
   }
 
   async function loadRemote() {
@@ -139,10 +155,7 @@ export default function App() {
   }, [selected.size, trades.length, totalStake]);
 
   const marketsByDate = groupMarketsByDate(markets);
-  const tradesByDelta = useMemo(
-    () => [...trades].sort((a, b) => b.view.absTradeDelta - a.view.absTradeDelta),
-    [trades],
-  );
+  const tradesByMarket = useMemo(() => groupTradesByMarket(trades), [trades]);
 
   function toggleSelect(ticker: string) {
     setSelected((prev) => {
@@ -162,8 +175,8 @@ export default function App() {
     });
   }
 
-  function selectAllVisible(rows: MarketView[]) {
-    setSelected(new Set(rows.map((r) => r.market_ticker)));
+  function selectAllOpen() {
+    selectTickersFrom(markets, pickableTradeTickers(markets, minAbsDelta));
   }
 
   function selectAllTomorrow() {
@@ -179,10 +192,21 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const tomorrowCount = useMemo(
-    () => tomorrowTradeTickers(markets, minAbsDelta).length,
+  const tomorrowTickers = useMemo(
+    () => tomorrowTradeTickers(markets, minAbsDelta),
     [markets, minAbsDelta],
   );
+  const openTickers = useMemo(
+    () => pickableTradeTickers(markets, minAbsDelta),
+    [markets, minAbsDelta],
+  );
+  const tomorrowActive = sameTickerSet(selected, tomorrowTickers);
+  const openActive = sameTickerSet(selected, openTickers);
+
+  const selectBtnActive =
+    "rounded-md border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium text-white dark:border-emerald-500 dark:bg-emerald-600";
+  const selectBtnIdle =
+    "rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200";
 
   return (
     <div className="mx-auto min-h-[100dvh] w-full max-w-6xl px-3 py-6 pb-6 sm:px-4 md:px-6 md:py-8 md:pb-8 md:pt-10">
@@ -302,22 +326,25 @@ export default function App() {
         <button
           type="button"
           onClick={selectAllTomorrow}
-          className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
+          aria-pressed={tomorrowActive}
+          className={tomorrowActive ? selectBtnActive : selectBtnIdle}
         >
           Select all tomorrow
-          {tomorrowCount ? ` (${tomorrowCount})` : ""}
+          {tomorrowTickers.length ? ` (${tomorrowTickers.length})` : ""}
         </button>
         <button
           type="button"
-          onClick={() => selectAllVisible(markets)}
-          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+          onClick={selectAllOpen}
+          aria-pressed={openActive}
+          className={openActive ? selectBtnActive : selectBtnIdle}
         >
           Select all open
+          {openTickers.length ? ` (${openTickers.length})` : ""}
         </button>
         <button
           type="button"
           onClick={clearSelected}
-          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+          className={selectBtnIdle}
         >
           Clear selection
         </button>
@@ -346,6 +373,7 @@ export default function App() {
                 groups={groupMarketsByEvent(sortByTradeDelta(rows))}
                 collapsed={collapsed}
                 selected={selected}
+                minAbsDelta={minAbsDelta}
                 onToggleCollapse={toggleCollapsed}
                 onToggleSelect={toggleSelect}
               />
@@ -358,7 +386,7 @@ export default function App() {
       ) : trades.length ? (
         <>
           <ExpectedPnlChart trades={trades} />
-          <TradesTable trades={tradesByDelta} />
+          <TradeMarketGroups groups={tradesByMarket} />
         </>
       ) : (
         <Empty text="Select markets with executable edge to build a Kelly book." />
@@ -448,16 +476,24 @@ function Empty({ text }: { text: string }) {
   );
 }
 
+function isPickable(row: MarketView, minAbsDelta: number): boolean {
+  return Boolean(
+    row.side && row.kellyFraction > 0 && row.absTradeDelta >= minAbsDelta,
+  );
+}
+
 function EventGroups({
   groups,
   collapsed,
   selected,
+  minAbsDelta,
   onToggleCollapse,
   onToggleSelect,
 }: {
   groups: [string, MarketView[]][];
   collapsed: Set<string>;
   selected: Set<string>;
+  minAbsDelta: number;
   onToggleCollapse: (eventTicker: string) => void;
   onToggleSelect: (ticker: string) => void;
 }) {
@@ -469,6 +505,9 @@ function EventGroups({
         const open = !collapsed.has(eventTicker);
         const title = rows[0]?.event_title || eventTicker;
         const date = rows[0]?.eventDate ?? "";
+        const selectedInGroup = rows.filter((r) =>
+          selected.has(r.market_ticker),
+        ).length;
         return (
           <div
             key={eventTicker}
@@ -486,6 +525,9 @@ function EventGroups({
                 </div>
                 <div className="truncate font-mono text-[11px] text-slate-400">
                   {eventTicker} · {date} · {rows.length} markets
+                  {selectedInGroup
+                    ? ` · ${selectedInGroup} selected`
+                    : ""}
                 </div>
               </div>
             </button>
@@ -493,6 +535,7 @@ function EventGroups({
               <MarketsTable
                 rows={rows}
                 selected={selected}
+                minAbsDelta={minAbsDelta}
                 onToggleSelect={onToggleSelect}
               />
             ) : null}
@@ -506,17 +549,20 @@ function EventGroups({
 function MarketsTable({
   rows,
   selected,
+  minAbsDelta,
   onToggleSelect,
 }: {
   rows: MarketView[];
   selected: Set<string>;
+  minAbsDelta: number;
   onToggleSelect: (ticker: string) => void;
 }) {
   return (
     <>
       <ul className="divide-y divide-slate-100 border-t border-slate-100 dark:divide-slate-900 dark:border-slate-900 md:hidden">
         {rows.map((row) => {
-          const canPick = Boolean(row.side && row.kellyFraction > 0);
+          const canPick = isPickable(row, minAbsDelta);
+          const checked = selected.has(row.market_ticker);
           return (
             <li key={row.market_ticker} className="flex gap-3 px-3 py-3">
               <div className="min-w-0 flex-1">
@@ -566,8 +612,8 @@ function MarketsTable({
                 <input
                   type="checkbox"
                   className="h-5 w-5 accent-emerald-600"
-                  checked={selected.has(row.market_ticker)}
-                  disabled={!canPick}
+                  checked={checked}
+                  disabled={!canPick && !checked}
                   onChange={() => onToggleSelect(row.market_ticker)}
                   aria-label={`Select ${row.market_ticker}`}
                 />
@@ -591,48 +637,52 @@ function MarketsTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr
-                key={row.market_ticker}
-                className="border-b border-slate-100 last:border-0 dark:border-slate-900"
-              >
-                <td className="px-3 py-2.5 align-top">
-                  <div className="font-medium text-slate-900 dark:text-slate-100">
-                    {row.target_phrase}
-                  </div>
-                  <div className="mt-0.5 font-mono text-[11px] text-slate-400">
-                    {row.market_ticker}
-                  </div>
-                </td>
-                <td className="px-3 py-2.5 align-top font-mono tabular-nums">
-                  {pct(row.model_probability)}
-                </td>
-                <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
-                  {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
-                </td>
-                <td className="px-3 py-2.5 align-top text-xs font-semibold">
-                  {row.side ?? "-"}
-                </td>
-                <td className="px-3 py-2.5 align-top font-mono tabular-nums">
-                  {row.tradeDelta === 0
-                    ? "-"
-                    : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
-                </td>
-                <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
-                  {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
-                </td>
-                <td className="px-3 py-2.5 align-top text-right">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-emerald-600"
-                    checked={selected.has(row.market_ticker)}
-                    disabled={!row.side || row.kellyFraction <= 0}
-                    onChange={() => onToggleSelect(row.market_ticker)}
-                    aria-label={`Select ${row.market_ticker}`}
-                  />
-                </td>
-              </tr>
-            ))}
+            {rows.map((row) => {
+              const canPick = isPickable(row, minAbsDelta);
+              const checked = selected.has(row.market_ticker);
+              return (
+                <tr
+                  key={row.market_ticker}
+                  className="border-b border-slate-100 last:border-0 dark:border-slate-900"
+                >
+                  <td className="px-3 py-2.5 align-top">
+                    <div className="font-medium text-slate-900 dark:text-slate-100">
+                      {row.target_phrase}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+                      {row.market_ticker}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 align-top font-mono tabular-nums">
+                    {pct(row.model_probability)}
+                  </td>
+                  <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
+                    {row.yes_bid.toFixed(2)} / {row.yes_ask.toFixed(2)}
+                  </td>
+                  <td className="px-3 py-2.5 align-top text-xs font-semibold">
+                    {row.side ?? "-"}
+                  </td>
+                  <td className="px-3 py-2.5 align-top font-mono tabular-nums">
+                    {row.tradeDelta === 0
+                      ? "-"
+                      : `${row.tradeDelta >= 0 ? "+" : ""}${row.tradeDelta.toFixed(3)}`}
+                  </td>
+                  <td className="px-3 py-2.5 align-top font-mono tabular-nums text-slate-500">
+                    {row.kellyFraction > 0 ? pct(row.kellyFraction) : "-"}
+                  </td>
+                  <td className="px-3 py-2.5 align-top text-right">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-emerald-600"
+                      checked={checked}
+                      disabled={!canPick && !checked}
+                      onChange={() => onToggleSelect(row.market_ticker)}
+                      aria-label={`Select ${row.market_ticker}`}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -640,26 +690,65 @@ function MarketsTable({
   );
 }
 
+function TradeMarketGroups({
+  groups,
+}: {
+  groups: [string, SizedTrade[]][];
+}) {
+  if (!groups.length) return <Empty text="No sized trades." />;
+
+  return (
+    <div className="space-y-4">
+      {groups.map(([eventTicker, rows]) => {
+        const name = marketDisplayName(rows[0]);
+        const stake = rows.reduce((s, t) => s + t.dollars, 0);
+        return (
+          <section
+            key={eventTicker}
+            className="overflow-hidden rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60"
+          >
+            <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 px-3 py-3 dark:border-slate-900 sm:px-4">
+              <div className="min-w-0">
+                <h3 className="truncate text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                  {name}
+                </h3>
+                <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                  {eventTicker}
+                  {rows[0]?.eventDate ? ` · ${rows[0].eventDate}` : ""}
+                </p>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {rows.length} trade{rows.length === 1 ? "" : "s"} ·{" "}
+                <span className="font-semibold tabular-nums text-slate-800 dark:text-slate-200">
+                  {money(stake)}
+                </span>
+              </p>
+            </header>
+            <TradesTable trades={rows} />
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function TradesTable({
   trades,
 }: {
-  trades: ReturnType<typeof sizeSelectedTrades>["trades"];
+  trades: SizedTrade[];
 }) {
   return (
     <>
-      <ul className="space-y-3 md:hidden">
+      <ul className="divide-y divide-slate-100 md:hidden dark:divide-slate-900">
         {trades.map((t) => (
-          <li
-            key={t.view.market_ticker}
-            className="rounded-xl border border-slate-200 bg-white/80 p-3 dark:border-slate-800 dark:bg-slate-950/60"
-          >
+          <li key={t.view.market_ticker} className="px-3 py-3">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="font-medium text-slate-900 dark:text-slate-100">
                   {t.view.target_phrase}
                 </p>
-                <p className="mt-0.5 truncate text-xs text-slate-400">
-                  {t.view.event_title || t.view.event_ticker}
+                <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                  {t.view.market_ticker}
                 </p>
               </div>
               <span
@@ -705,11 +794,11 @@ function TradesTable({
         ))}
       </ul>
 
-      <div className="hidden overflow-x-auto rounded-xl border border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-950/60 md:block">
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[720px] border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-              <th className="px-3 py-3 font-medium">Market</th>
+              <th className="px-3 py-3 font-medium">Phrase</th>
               <th className="px-3 py-3 font-medium">Side</th>
               <th className="px-3 py-3 font-medium">Delta</th>
               <th className="px-3 py-3 font-medium">Kelly f</th>
@@ -728,8 +817,8 @@ function TradesTable({
                   <div className="font-medium text-slate-900 dark:text-slate-100">
                     {t.view.target_phrase}
                   </div>
-                  <div className="mt-0.5 max-w-xs truncate text-xs text-slate-400">
-                    {t.view.event_title || t.view.event_ticker}
+                  <div className="mt-0.5 max-w-xs truncate font-mono text-[11px] text-slate-400">
+                    {t.view.market_ticker}
                   </div>
                 </td>
                 <td className="px-3 py-3 align-top">

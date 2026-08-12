@@ -186,6 +186,22 @@ export function estimateRiskOfRuin(
   return clamp(Math.exp((-2 * mu) / variance), 0, 1);
 }
 
+/** Executable markets meeting min |delta| (same rules as Kelly sizing). */
+export function pickableTradeTickers(
+  markets: MarketView[],
+  minAbsDelta: number,
+): string[] {
+  const minAbs = Math.max(0, minAbsDelta);
+  return markets
+    .filter(
+      (m) =>
+        m.side != null &&
+        m.kellyFraction > 0 &&
+        m.absTradeDelta >= minAbs,
+    )
+    .map((m) => m.market_ticker);
+}
+
 /** Tickers for executable tomorrow (UTC) markets meeting min |delta|. */
 export function tomorrowTradeTickers(
   markets: MarketView[],
@@ -193,16 +209,15 @@ export function tomorrowTradeTickers(
   now = new Date(),
 ): string[] {
   const tomorrow = tomorrowUtcDateKey(now);
-  const minAbs = Math.max(0, minAbsDelta);
-  return markets
-    .filter(
-      (m) =>
-        m.eventDate === tomorrow &&
-        m.side != null &&
-        m.kellyFraction > 0 &&
-        m.absTradeDelta >= minAbs,
-    )
-    .map((m) => m.market_ticker);
+  return pickableTradeTickers(
+    markets.filter((m) => m.eventDate === tomorrow),
+    minAbsDelta,
+  );
+}
+
+export function sameTickerSet(selected: Set<string>, tickers: string[]): boolean {
+  if (!tickers.length || selected.size !== tickers.length) return false;
+  return tickers.every((t) => selected.has(t));
 }
 
 /**
@@ -337,6 +352,39 @@ export function groupTradesByDate(trades: SizedTrade[]): [string, SizedTrade[]][
     map.set(trade.eventDate, list);
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** Prefer "Webull" from "What will Webull say…"; else event title / ticker. */
+export function marketDisplayName(trade: SizedTrade): string {
+  const title = trade.view.event_title?.trim() ?? "";
+  const mention = title.match(/what will\s+(.+?)\s+say\b/i);
+  if (mention?.[1]) return mention[1].trim();
+  if (title) return title;
+  return trade.view.event_ticker;
+}
+
+/** Group by event/market; groups + rows sorted by Kelly f (desc). */
+export function groupTradesByMarket(
+  trades: SizedTrade[],
+): [string, SizedTrade[]][] {
+  const map = new Map<string, SizedTrade[]>();
+  for (const trade of trades) {
+    const key = trade.view.event_ticker;
+    const list = map.get(key) ?? [];
+    list.push(trade);
+    map.set(key, list);
+  }
+  return [...map.entries()]
+    .map(([key, rows]) => {
+      const sorted = [...rows].sort((a, b) => b.kellyFraction - a.kellyFraction);
+      return [key, sorted] as [string, SizedTrade[]];
+    })
+    .sort((a, b) => {
+      const ka = a[1][0]?.kellyFraction ?? 0;
+      const kb = b[1][0]?.kellyFraction ?? 0;
+      if (kb !== ka) return kb - ka;
+      return marketDisplayName(a[1][0]).localeCompare(marketDisplayName(b[1][0]));
+    });
 }
 
 export function sortByTradeDelta(rows: MarketView[]): MarketView[] {
