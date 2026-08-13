@@ -37,11 +37,72 @@ export function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-/** YYYY-MM-DD for tomorrow in UTC. */
+const EASTERN_TZ = "America/New_York";
+/** Trading day rolls at 7:00 America/New_York (EST/EDT). */
+export const EASTERN_DAY_ROLL_HOUR = 7;
+
+function zonedParts(
+  now: Date,
+  timeZone: string,
+): { year: number; month: number; day: number; hour: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const num = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === type)?.value);
+  return {
+    year: num("year"),
+    month: num("month"),
+    day: num("day"),
+    hour: num("hour"),
+  };
+}
+
+function ymdKey(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function addCalendarDays(
+  year: number,
+  month: number,
+  day: number,
+  delta: number,
+): string {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Eastern trading "today": calendar date in America/New_York, but before
+ * 07:00 still counts as the previous calendar day.
+ */
+export function easternTradingDateKey(now = new Date()): string {
+  const { year, month, day, hour } = zonedParts(now, EASTERN_TZ);
+  if (hour < EASTERN_DAY_ROLL_HOUR) {
+    return addCalendarDays(year, month, day, -1);
+  }
+  return ymdKey(year, month, day);
+}
+
+/**
+ * Target day for "Select all tomorrow": trading-today + 1 in Eastern.
+ * Before 7am Eastern on calendar day D, tomorrow is still D.
+ */
+export function tomorrowTradeDateKey(now = new Date()): string {
+  const today = easternTradingDateKey(now);
+  const [y, m, d] = today.split("-").map(Number);
+  return addCalendarDays(y, m, d, 1);
+}
+
+/** Alias kept for older call sites; same as tomorrowTradeDateKey. */
 export function tomorrowUtcDateKey(now = new Date()): string {
-  const day = startOfUtcDay(now);
-  day.setUTCDate(day.getUTCDate() + 1);
-  return day.toISOString().slice(0, 10);
+  return tomorrowTradeDateKey(now);
 }
 
 export function eventDateKey(row: PredictionRow): string {
@@ -202,13 +263,13 @@ export function pickableTradeTickers(
     .map((m) => m.market_ticker);
 }
 
-/** Tickers for executable tomorrow (UTC) markets meeting min |delta|. */
+/** Tickers for executable tomorrow (Eastern 7am-roll) markets meeting min |delta|. */
 export function tomorrowTradeTickers(
   markets: MarketView[],
   minAbsDelta: number,
   now = new Date(),
 ): string[] {
-  const tomorrow = tomorrowUtcDateKey(now);
+  const tomorrow = tomorrowTradeDateKey(now);
   return pickableTradeTickers(
     markets.filter((m) => m.eventDate === tomorrow),
     minAbsDelta,

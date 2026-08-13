@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   convictionToMixAlpha,
+  easternTradingDateKey,
   enrichMarket,
   estimateRiskOfRuin,
   isPastEvent,
   sizeSelectedTrades,
+  tomorrowTradeDateKey,
 } from "./sizing";
 import type { PredictionRow } from "./types";
 
@@ -111,5 +113,21 @@ describe("convictionToMixAlpha", () => {
     expect(convictionToMixAlpha(0.75)).toBeGreaterThan(
       convictionToMixAlpha(0.5),
     );
+  });
+});
+
+describe("tomorrowTradeDateKey (Eastern 7am roll)", () => {
+  it("before 7am Eastern keeps tomorrow as that calendar day", () => {
+    // 2026-08-12 06:00 EDT = 10:00 UTC
+    const before = new Date("2026-08-12T10:00:00.000Z");
+    expect(easternTradingDateKey(before)).toBe("2026-08-11");
+    expect(tomorrowTradeDateKey(before)).toBe("2026-08-12");
+  });
+
+  it("at/after 7am Eastern rolls tomorrow to the next calendar day", () => {
+    // 2026-08-12 08:00 EDT = 12:00 UTC
+    const after = new Date("2026-08-12T12:00:00.000Z");
+    expect(easternTradingDateKey(after)).toBe("2026-08-12");
+    expect(tomorrowTradeDateKey(after)).toBe("2026-08-13");
   });
 });

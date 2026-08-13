@@ -329,7 +329,7 @@ export default function App() {
           aria-pressed={tomorrowActive}
           className={tomorrowActive ? selectBtnActive : selectBtnIdle}
         >
-          Select all tomorrow
+          Select all tomorrow (ET)
           {tomorrowTickers.length ? ` (${tomorrowTickers.length})` : ""}
         </button>
         <button
